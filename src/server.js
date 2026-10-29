@@ -2,7 +2,8 @@
  * Main Web Server
  * Exposes required ports and interfaces:
  * - GET /health
- * - POST /messages
+ * - POST /messages (Webhook authentication support)
+ * - POST /messages/media (Persistent voice/audio attachments storage)
  * - GET /trace/{rider_id}
  * - GET /ops/pending
  * - GET /ops (Ops Review UI dashboard)
@@ -12,17 +13,58 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const path = require('path');
+const fs = require('fs');
+const multer = require('multer');
 const { initSchema, loadCSVs, resetDatabase, db } = require('./db');
-const { getTraces } = require('./tracer');
+const { getTraces, recordTrace } = require('./tracer');
 const { handleRiderMessage } = require('./agent');
 const { disbursePayout } = require('./payswift');
 
 const app = express();
 const PORT = process.env.PORT || 8000;
+const WHATSAPP_WEBHOOK_SECRET = process.env.WHATSAPP_WEBHOOK_SECRET || '';
+
+// Configure storage directory for persistent voice notes and media
+const UPLOADS_DIR = process.env.MEDIA_STORAGE_PATH || path.join(__dirname, '..', 'storage', 'media');
+if (!fs.existsSync(UPLOADS_DIR)) {
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
+
+// Multer storage engine for audio / voice notes / attachments
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, UPLOADS_DIR),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname) || '.ogg';
+    const unique = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}${ext}`;
+    cb(null, unique);
+  }
+});
+const upload = multer({ storage, limits: { fileSize: 25 * 1024 * 1024 } }); // 25MB max
 
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use('/media', express.static(UPLOADS_DIR)); // Serve uploaded media for ops dashboard
+
+// Webhook Authentication Middleware
+function verifyWebhookAuth(req, res, next) {
+  // If no WHATSAPP_WEBHOOK_SECRET configured, allow requests (e.g. standard evals)
+  if (!WHATSAPP_WEBHOOK_SECRET) {
+    return next();
+  }
+
+  // Check Bearer token or custom X-Webhook-Secret / X-Hub-Signature header
+  const authHeader = req.headers['authorization'];
+  const secretHeader = req.headers['x-webhook-secret'] || req.headers['x-hub-signature-256'];
+  const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.substring(7) : secretHeader;
+
+  if (!token || token !== WHATSAPP_WEBHOOK_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized: Invalid or missing webhook token' });
+  }
+
+  next();
+}
 
 // Initialize DB schema & preload CSV data
 initSchema();
@@ -39,8 +81,8 @@ app.post('/reset', (req, res) => {
   res.json({ status: 'reset_success' });
 });
 
-// 2. POST /messages (Rider WhatsApp webhook)
-app.post('/messages', async (req, res) => {
+// 2. POST /messages (Rider WhatsApp webhook with optional token verification)
+app.post('/messages', verifyWebhookAuth, async (req, res) => {
   try {
     const { message_id, rider_id, text, received_at } = req.body;
     if (!rider_id || !text) {
@@ -61,20 +103,73 @@ app.post('/messages', async (req, res) => {
   }
 });
 
-// 3. GET /trace/:rider_id
+// 3. POST /messages/media (Persistent Audio & Voice Note Storage)
+app.post('/messages/media', verifyWebhookAuth, upload.single('media'), async (req, res) => {
+  try {
+    const { message_id, rider_id, media_type, transcript, received_at } = req.body;
+    if (!rider_id || !req.file) {
+      return res.status(400).json({ error: 'rider_id and media file are required' });
+    }
+
+    const mediaId = `med_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const atTime = received_at || new Date().toISOString();
+
+    db.prepare(`
+      INSERT INTO media_attachments (id, rider_id, message_id, media_type, original_filename, mime_type, file_path, file_size, transcript, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      mediaId,
+      rider_id,
+      message_id || null,
+      media_type || 'audio',
+      req.file.originalname,
+      req.file.mimetype,
+      req.file.filename,
+      req.file.size,
+      transcript || null,
+      atTime
+    );
+
+    recordTrace({
+      riderId: rider_id,
+      at: atTime,
+      type: 'tool_call',
+      name: 'archive_media_attachment',
+      input: { message_id, media_type: media_type || 'audio', filename: req.file.originalname, size: req.file.size },
+      output: { media_id: mediaId, stored_path: `/media/${req.file.filename}` }
+    });
+
+    let reply = 'Aapka voice note/document successfully record kar liya gaya hai.';
+    if (transcript) {
+      reply = await handleRiderMessage({
+        messageId: message_id || mediaId,
+        riderId: rider_id,
+        text: transcript,
+        receivedAt: atTime
+      });
+    }
+
+    return res.json({ success: true, media_id: mediaId, reply });
+  } catch (err) {
+    console.error('Error processing media:', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// 4. GET /trace/:rider_id
 app.get('/trace/:rider_id', (req, res) => {
   const { rider_id } = req.params;
   const traces = getTraces(rider_id);
   res.json(traces);
 });
 
-// 4. GET /ops/pending
+// 5. GET /ops/pending
 app.get('/ops/pending', (req, res) => {
   const rows = db.prepare("SELECT id, rider_id, type, amount, reason, created_at FROM ops_pending WHERE status = 'pending' ORDER BY created_at DESC").all();
   res.json(rows);
 });
 
-// 5. POST /ops/decision (Approve or Reject pending dispute)
+// 6. POST /ops/decision (Approve or Reject pending dispute)
 app.post('/ops/decision', async (req, res) => {
   const { id, decision } = req.body; // decision: 'approve' | 'reject'
   const item = db.prepare('SELECT * FROM ops_pending WHERE id = ?').get(id);
@@ -91,10 +186,11 @@ app.post('/ops/decision', async (req, res) => {
   res.json({ success: true, status: decision });
 });
 
-// 6. Ops Dashboard UI
+// 7. Ops Dashboard UI
 app.get('/ops', (req, res) => {
   const pending = db.prepare('SELECT * FROM ops_pending ORDER BY created_at DESC').all();
   const riders = db.prepare('SELECT DISTINCT rider_id FROM traces ORDER BY id DESC LIMIT 50').all();
+  const mediaList = db.prepare('SELECT * FROM media_attachments ORDER BY created_at DESC LIMIT 20').all();
 
   const html = `
 <!DOCTYPE html>
@@ -120,6 +216,7 @@ app.get('/ops', (req, res) => {
     .btn-reject { background: #ef4444; color: white; }
     select { padding: 8px; border-radius: 4px; border: 1px solid #cbd5e1; font-size: 14px; min-width: 150px; }
     pre { background: #0f172a; color: #f8fafc; padding: 12px; border-radius: 6px; overflow-x: auto; font-size: 13px; }
+    audio { height: 32px; vertical-align: middle; }
   </style>
 </head>
 <body>
@@ -157,6 +254,36 @@ app.get('/ops', (req, res) => {
                 </form>
               ` : p.status}
             </td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Archived WhatsApp Media & Voice Notes</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Rider ID</th>
+          <th>Type</th>
+          <th>Audio / File</th>
+          <th>Transcript</th>
+          <th>Received At</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${mediaList.length === 0 ? '<tr><td colspan="5">No archived voice notes yet.</td></tr>' : mediaList.map(m => `
+          <tr>
+            <td><strong>${m.rider_id}</strong></td>
+            <td><span class="badge badge-approval">${m.media_type}</span></td>
+            <td>
+              ${m.mime_type && m.mime_type.startsWith('audio') ? `
+                <audio controls src="/media/${m.file_path}"></audio>
+              ` : `<a href="/media/${m.file_path}" target="_blank">View File</a>`}
+            </td>
+            <td>${m.transcript || '<em>No transcript</em>'}</td>
+            <td>${m.created_at}</td>
           </tr>
         `).join('')}
       </tbody>

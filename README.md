@@ -2,7 +2,7 @@
 
 ProcureYard take-home assignment for the ML/AI Engineer Intern role.
 
-An automated AI dispute resolution system that handles rider payout complaints received over WhatsApp (in  Hindi, and English), investigates discrepancies against trips and payout databases, and deterministically resolves or escalates cases adhering to finance guardrails.
+An automated AI dispute resolution system that handles rider payout complaints received over WhatsApp (in Hinglish, Hindi, and English), investigates discrepancies against trips and payout databases, and deterministically resolves or escalates cases adhering to finance guardrails.
 
 ---
 
@@ -45,10 +45,11 @@ node evals/run.js http://localhost:8000
 ## 3. Architecture & API Endpoints
 
 - **`GET /health`**: Returns `200 OK` when the service is healthy and ready.
-- **`POST /messages`**: Accepts WhatsApp messages and returns `{"reply": "..."}`. Idempotent against duplicate vendor webhook deliveries.
+- **`POST /messages`**: Accepts WhatsApp messages and returns `{"reply": "..."}`. Idempotent against duplicate vendor webhook deliveries with optional HMAC/Bearer token authorization.
+- **`POST /messages/media`**: Secure endpoint for archiving incoming WhatsApp audio notes, voice notes, and screenshots with audio player integration in the Ops console.
 - **`GET /trace/{rider_id}`**: Returns an ordered JSON audit trail of every step taken for a rider: `message_in`, `tool_call`, `decision`, `reply`, and `error`.
 - **`GET /ops/pending`**: Returns list of pending approvals and escalations for human Ops review.
-- **`GET /ops`**: Built-in Ops dashboard to review live traces and click-to-approve/reject pending payouts.
+- **`GET /ops`**: Built-in Ops dashboard to review live traces, voice recordings, and click-to-approve/reject pending payouts.
 - **`POST /reset`**: Test runner helper to reset dynamic conversation/trace state between evaluation scenarios.
 
 ---
@@ -62,7 +63,14 @@ node evals/run.js http://localhost:8000
 
 ---
 
-## 5. Evaluation Results
+## 5. Security & Persistent Media Storage
+
+- **Dedicated Webhook Authentication:** Implemented in `src/server.js` (`verifyWebhookAuth`) supporting Bearer token authorization and `X-Webhook-Secret` verification. When `WHATSAPP_WEBHOOK_SECRET` is configured in `.env`, unauthorized webhook deliveries are rejected with `401 Unauthorized`.
+- **Persistent Media Storage:** Implemented persistent voice note & media attachment archival in `src/server.js` backed by local filesystem storage (`/storage/media`) and metadata indexing in `media_attachments` table with inline HTML5 audio playback on the Ops Dashboard.
+
+---
+
+## 6. Evaluation Results
 
 Run command:
 ```bash
@@ -72,4 +80,3 @@ node evals/run.js http://localhost:8000
 * **Passed:** 24 / 24
 * **Pass Rate:** 100%
 * Verifies zero overpayments, full compliance with the 1-daily-autopay limit, exact payout amounts, and proper escalation handling.
-

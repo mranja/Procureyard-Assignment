@@ -76,6 +76,21 @@ function initSchema() {
       messages TEXT, -- JSON array of turns
       updated_at TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS media_attachments (
+      id TEXT PRIMARY KEY,
+      rider_id TEXT NOT NULL,
+      message_id TEXT,
+      media_type TEXT, -- audio, voice, image, document
+      original_filename TEXT,
+      mime_type TEXT,
+      file_path TEXT NOT NULL,
+      file_size INTEGER,
+      transcript TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_media_rider ON media_attachments(rider_id);
   `);
 }
 
