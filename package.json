@@ -1,0 +1,25 @@
+{
+  "name": "qd-assignment",
+  "version": "1.0.0",
+  "description": "ProcureYard take-home for the ML/AI Engineer Intern role. Start with `BRIEF.md`.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node evals/run.js http://localhost:8000"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Procureyard/qd-assignment.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Procureyard/qd-assignment/issues"
+  },
+  "homepage": "https://github.com/Procureyard/qd-assignment#readme"
+}

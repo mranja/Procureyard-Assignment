@@ -4,3 +4,7 @@ node_modules/
 __pycache__/
 *.pyc
 !payswift/server.pyc
+
+quickdrop.db
+node_modules/
+.env
