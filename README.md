@@ -2,7 +2,7 @@
 
 ProcureYard take-home assignment for the ML/AI Engineer Intern role.
 
-An automated AI dispute resolution system that handles rider payout complaints received over WhatsApp (in Hinglish, Hindi, and English), investigates discrepancies against trips and payout databases, and deterministically resolves or escalates cases adhering to finance guardrails.
+An automated AI dispute resolution system that handles rider payout complaints received over WhatsApp (in  Hindi, and English), investigates discrepancies against trips and payout databases, and deterministically resolves or escalates cases adhering to finance guardrails.
 
 ---
 
