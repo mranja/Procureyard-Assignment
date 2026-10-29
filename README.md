@@ -73,8 +73,3 @@ node evals/run.js http://localhost:8000
 * **Pass Rate:** 100%
 * Verifies zero overpayments, full compliance with the 1-daily-autopay limit, exact payout amounts, and proper escalation handling.
 
----
-
-## 6. What Was Skipped
-- Dedicated authentication tokens on WhatsApp webhooks (treated all requests as authenticated from the mock vendor gateway).
-- Long-term permanent persistent storage beyond SQLite/Postgres for archived WhatsApp audio/media notes (text disputes prioritized).
