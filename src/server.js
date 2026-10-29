@@ -70,7 +70,7 @@ app.get('/trace/:rider_id', (req, res) => {
 
 // 4. GET /ops/pending
 app.get('/ops/pending', (req, res) => {
-  const rows = db.prepare('SELECT id, rider_id, type, amount, reason, created_at FROM ops_pending WHERE status = "pending" ORDER BY created_at DESC').all();
+  const rows = db.prepare("SELECT id, rider_id, type, amount, reason, created_at FROM ops_pending WHERE status = 'pending' ORDER BY created_at DESC").all();
   res.json(rows);
 });
 

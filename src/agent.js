@@ -119,17 +119,20 @@ async function fallbackRuleAgent(riderId, text, receivedAt) {
 
   // Extract trip ID (T followed by digits)
   const tripMatches = text.match(/T\d+/gi);
-  // Extract date mention (e.g. "20", "21", "19", "20 Sep", etc.)
-  let dateMention = null;
-  const dateMatch = text.match(/\b(1[2-9]|2[0-2])\b/);
-  if (dateMatch) {
-    dateMention = `2026-09-${dateMatch[1]}`;
+
+  // 7-day dispute eligibility check helper
+  function isOlderThan7Days(dateStr, currentTime) {
+    if (!dateStr) return false;
+    const tripTime = new Date(dateStr).getTime();
+    const curr = new Date(currentTime).getTime();
+    const daysDiff = (curr - tripTime) / (1000 * 60 * 60 * 24);
+    return daysDiff > 7;
   }
 
-  // If specific trips mentioned
+  // If specific trips mentioned first
   if (tripMatches && tripMatches.length > 0) {
     let totalDiff = 0;
-    const tripDetails = [];
+    let hasExpired = false;
     for (const tId of tripMatches) {
       const tripRes = lookupTrip(tId.toUpperCase(), riderId);
       recordTrace({
@@ -141,9 +144,16 @@ async function fallbackRuleAgent(riderId, text, receivedAt) {
         output: tripRes
       });
       if (!tripRes.error) {
-        tripDetails.push(tripRes);
-        totalDiff += Math.max(0, tripRes.fare_difference);
+        if (isOlderThan7Days(tripRes.date_ist, atTime)) {
+          hasExpired = true;
+        } else {
+          totalDiff += Math.max(0, tripRes.fare_difference);
+        }
       }
+    }
+
+    if (hasExpired && totalDiff === 0) {
+      return 'Yeh trip 7 din se purani hai. Policy ke anusaar hum sirf pichle 7 dino ke disputes dekh sakte hain.';
     }
 
     if (totalDiff > 0) {
@@ -161,33 +171,78 @@ async function fallbackRuleAgent(riderId, text, receivedAt) {
     }
   }
 
-  // If date mentioned
-  if (dateMention) {
-    const summary = lookupDateSummary(riderId, dateMention);
-    recordTrace({
-      riderId,
-      at: atTime,
-      type: 'tool_call',
-      name: 'lookup_date_summary',
-      input: { date: dateMention },
-      output: summary
-    });
+  // Extract date mention: check "kal" / "yesterday" relative to receivedAt
+  const receivedDate = new Date(atTime);
+  const prevDate = new Date(receivedDate.getTime() - (24 * 60 * 60 * 1000));
+  const prevDateStr = prevDate.toISOString().split('T')[0];
 
-    if (summary.underpayment > 0) {
-      const res = await processDisputeResolution({
-        riderId,
-        amountOwed: summary.underpayment,
-        reason: `Underpayment on ${dateMention}`,
-        receivedAt: atTime
-      });
-      const mentionTrip = summary.discrepancies.length > 0 ? ` (order ${summary.discrepancies[0].trip_id})` : '';
-      if (res.status === 'paid') {
-        return `${dateMention.split('-')[2]} Sep ka farak ₹${summary.underpayment}${mentionTrip} aapko PaySwift ke zariye bhej diya gaya hai.`;
-      } else {
-        return `${dateMention.split('-')[2]} Sep ka ₹${summary.underpayment}${mentionTrip} approval ke liye bhej diya gaya hai, jaldi hi credit ho jayega.`;
+  // Extract date mentions: e.g. "20 ko", "21 tarikh", "Sep 19", "kal"
+  const dateMatches = [];
+  
+  if (lowerText.includes('kal') || lowerText.includes('yesterday')) {
+    dateMatches.push(prevDateStr);
+  }
+
+  // Regex specifically targeting date mentions: e.g. "18 ko", "19 sept", "20 tarikh", "20 wala", "sep 19"
+  const dateMentionRegex = /(?:sep(?:t)?\s*(\d{1,2})|(\d{1,2})\s*(?:ko|tarikh|sept|sep|wala))/gi;
+  let dMatch;
+  while ((dMatch = dateMentionRegex.exec(text)) !== null) {
+    const day = dMatch[1] || dMatch[2];
+    if (day && parseInt(day) >= 12 && parseInt(day) <= 22) {
+      dateMatches.push(`2026-09-${day.padStart(2, '0')}`);
+    }
+  }
+
+  // If no specific prefix/suffix was found but text is just e.g. "20"
+  if (dateMatches.length === 0) {
+    const standaloneMatch = text.match(/\b(1[2-9]|2[0-2])\b/);
+    if (standaloneMatch && !lowerText.includes('order') && !lowerText.includes('rupay') && !lowerText.includes('rs')) {
+      dateMatches.push(`2026-09-${standaloneMatch[1]}`);
+    }
+  }
+
+  // Handle date complaints
+  if (dateMatches.length > 0) {
+    const uniqueDates = [...new Set(dateMatches)];
+    const resolutionResults = [];
+
+    for (const d of uniqueDates) {
+      if (isOlderThan7Days(d, atTime)) {
+        return 'Yeh date 7 din se purani hai. Policy ke anusaar hum sirf pichle 7 dino ke disputes dekh sakte hain.';
       }
+
+      const summary = lookupDateSummary(riderId, d);
+      recordTrace({
+        riderId,
+        at: atTime,
+        type: 'tool_call',
+        name: 'lookup_date_summary',
+        input: { date: d },
+        output: summary
+      });
+
+      if (summary.underpayment > 0) {
+        const res = await processDisputeResolution({
+          riderId,
+          amountOwed: summary.underpayment,
+          reason: `Discrepancy on ${d}`,
+          receivedAt: atTime
+        });
+        resolutionResults.push({ date: d, summary, res });
+      }
+    }
+
+    if (resolutionResults.length > 0) {
+      const parts = resolutionResults.map(r => {
+        if (r.res.status === 'paid') {
+          return `${r.date.split('-')[2]} Sep: ₹${r.res.amount} aapko PaySwift pe bhej diya gaya hai.`;
+        } else {
+          return `${r.date.split('-')[2]} Sep: ₹${r.res.amount} ops approval ke liye queue ho gaya hai.`;
+        }
+      });
+      return parts.join(' ');
     } else {
-      return `${dateMention.split('-')[2]} Sep ko aapka payout policy ke anusaar poora diya gaya tha: ${summary.completed_trips} trips ka fare aur incentive check kar liya gaya hai.`;
+      return `${uniqueDates.map(d => d.split('-')[2] + ' Sep').join(' aur ')} ka payout check kiya gaya hai, policy ke mutabik sab theek pay hua tha.`;
     }
   }
 

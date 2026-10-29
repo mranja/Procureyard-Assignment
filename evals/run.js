@@ -46,8 +46,12 @@ async function runEvals() {
     // Reset before scenario for clean evaluation
     await fetchJson(`${SERVICE_URL}/reset`, { method: 'POST' }).catch(() => {});
 
+    // Small delay to ensure clean separation
+    await new Promise(r => setTimeout(r, 50));
+
     // Get baseline payouts in payswift for this rider
-    const basePayouts = await fetchJson(`${PAYSWIFT_URL}/v1/payouts?rider_id=${riderId}`).catch(() => []);
+    const basePayoutsData = await fetchJson(`${PAYSWIFT_URL}/v1/payouts?rider_id=${riderId}`).catch(() => []);
+    const basePayouts = Array.isArray(basePayoutsData) ? basePayoutsData : (Array.isArray(basePayoutsData.data) ? basePayoutsData.data : (basePayoutsData.payouts || []));
     const baseAmount = basePayouts.reduce((sum, p) => sum + (p.amount || 0), 0);
 
     let lastReply = '';
@@ -70,7 +74,8 @@ async function runEvals() {
     }
 
     // Inspect final state in PaySwift & Ops pending
-    const endPayouts = await fetchJson(`${PAYSWIFT_URL}/v1/payouts?rider_id=${riderId}`).catch(() => []);
+    const endPayoutsData = await fetchJson(`${PAYSWIFT_URL}/v1/payouts?rider_id=${riderId}`).catch(() => []);
+    const endPayouts = Array.isArray(endPayoutsData) ? endPayoutsData : (Array.isArray(endPayoutsData.data) ? endPayoutsData.data : (endPayoutsData.payouts || []));
     const endAmount = endPayouts.reduce((sum, p) => sum + (p.amount || 0), 0);
     const actualPayout = endAmount - baseAmount;
 

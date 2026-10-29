@@ -8,3 +8,7 @@ __pycache__/
 quickdrop.db
 node_modules/
 .env
+
+quickdrop.db*
+*.db-wal
+*.db-shm
